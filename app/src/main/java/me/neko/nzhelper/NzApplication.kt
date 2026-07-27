@@ -15,6 +15,7 @@ import me.neko.nzhelper.core.database.AppDatabase
 import me.neko.nzhelper.core.database.LegacyMigrator
 import me.neko.nzhelper.core.datastore.TagSettings
 import me.neko.nzhelper.core.notification.NotificationUtil
+import me.neko.nzhelper.core.webdav.WebDavSettings
 import me.neko.nzhelper.core.worker.RecycleBinWorker
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
@@ -59,7 +60,8 @@ class NzApplication : Application() {
             )
             .create()
 
-        TagSettings.ensureDefaults(this)
+        TagSettings.preload(this)
+        WebDavSettings.preload(this)
 
         appScope.launch {
             AppDatabase.get(this@NzApplication)

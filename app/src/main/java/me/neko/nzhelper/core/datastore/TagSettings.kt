@@ -3,7 +3,7 @@ package me.neko.nzhelper.core.datastore
 import android.content.Context
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.launch
 import me.neko.nzhelper.NzApplication
 import me.neko.nzhelper.core.database.AppDatabase
 import me.neko.nzhelper.core.database.entity.TaxonomyEntity
@@ -80,39 +80,68 @@ object TagSettings {
 
     private val cache = HashMap<String, String?>()
 
+    /**
+     * 预加载全部 taxonomy 数据到内存缓存，避免后续主线程 IO。
+     */
+    fun preload(context: Context) {
+        NzApplication.appScope.launch {
+            val dao = dao(context)
+            val keys = listOf(KEY_CATEGORIES, KEY_GROUPS, KEY_TAGS, KEY_DEFAULTS_SEEDED)
+            for (key in keys) {
+                cache[key] = dao.get(key)
+            }
+            if (cache[KEY_DEFAULTS_SEEDED] != "true") {
+                val d = dao
+                if (d.get(KEY_CATEGORIES) == null) {
+                    val j = gson.toJson(DEFAULT_CATEGORIES)
+                    d.upsert(TaxonomyEntity(KEY_CATEGORIES, j))
+                    cache[KEY_CATEGORIES] = j
+                }
+                if (d.get(KEY_GROUPS) == null) {
+                    val j = gson.toJson(DEFAULT_GROUPS)
+                    d.upsert(TaxonomyEntity(KEY_GROUPS, j))
+                    cache[KEY_GROUPS] = j
+                }
+                if (d.get(KEY_TAGS) == null) {
+                    val j = gson.toJson(DEFAULT_TAGS)
+                    d.upsert(TaxonomyEntity(KEY_TAGS, j))
+                    cache[KEY_TAGS] = j
+                }
+                d.upsert(TaxonomyEntity(KEY_DEFAULTS_SEEDED, "true"))
+                cache[KEY_DEFAULTS_SEEDED] = "true"
+            }
+        }
+    }
+
     private fun readRaw(context: Context, key: String): String? {
-        if (cache.containsKey(key)) return cache[key]
-        val v = runBlocking { dao(context).get(key) }
-        cache[key] = v
-        return v
+        return cache[key]
     }
 
     private fun writeRaw(context: Context, key: String, value: String) {
         cache[key] = value
-        runBlocking { dao(context).upsert(TaxonomyEntity(key, value)) }
+        NzApplication.appScope.launch {
+            dao(context).upsert(TaxonomyEntity(key, value))
+        }
     }
 
     fun ensureDefaults(context: Context) {
         if (readRaw(context, KEY_DEFAULTS_SEEDED) == "true") return
-        runBlocking {
-            val dao = dao(context)
-            if (dao.get(KEY_CATEGORIES) == null) {
-                val j = gson.toJson(DEFAULT_CATEGORIES)
-                dao.upsert(TaxonomyEntity(KEY_CATEGORIES, j))
-                cache[KEY_CATEGORIES] = j
+        val defaultsJson = mapOf(
+            KEY_CATEGORIES to gson.toJson(DEFAULT_CATEGORIES),
+            KEY_GROUPS to gson.toJson(DEFAULT_GROUPS),
+            KEY_TAGS to gson.toJson(DEFAULT_TAGS)
+        )
+        for ((key, json) in defaultsJson) {
+            if (cache[key] == null) {
+                cache[key] = json
+                NzApplication.appScope.launch {
+                    dao(context).upsert(TaxonomyEntity(key, json))
+                }
             }
-            if (dao.get(KEY_GROUPS) == null) {
-                val j = gson.toJson(DEFAULT_GROUPS)
-                dao.upsert(TaxonomyEntity(KEY_GROUPS, j))
-                cache[KEY_GROUPS] = j
-            }
-            if (dao.get(KEY_TAGS) == null) {
-                val j = gson.toJson(DEFAULT_TAGS)
-                dao.upsert(TaxonomyEntity(KEY_TAGS, j))
-                cache[KEY_TAGS] = j
-            }
-            dao.upsert(TaxonomyEntity(KEY_DEFAULTS_SEEDED, "true"))
-            cache[KEY_DEFAULTS_SEEDED] = "true"
+        }
+        cache[KEY_DEFAULTS_SEEDED] = "true"
+        NzApplication.appScope.launch {
+            dao(context).upsert(TaxonomyEntity(KEY_DEFAULTS_SEEDED, "true"))
         }
     }
 

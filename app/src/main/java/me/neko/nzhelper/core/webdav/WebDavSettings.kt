@@ -1,7 +1,8 @@
 package me.neko.nzhelper.core.webdav
 
 import android.content.Context
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.launch
+import me.neko.nzhelper.NzApplication
 import me.neko.nzhelper.core.database.AppDatabase
 import me.neko.nzhelper.core.database.entity.WebDavConfigEntity
 
@@ -14,18 +15,30 @@ object WebDavSettings {
 
     private fun dao(context: Context) = AppDatabase.get(context).webDavConfigDao()
 
+    /**
+     * 预加载 WebDAV 配置到内存缓存，避免主线程 IO。
+     */
+    fun preload(context: Context) {
+        NzApplication.appScope.launch {
+            cache = dao(context).get() ?: WebDavConfigEntity()
+        }
+    }
+
     private fun current(context: Context): WebDavConfigEntity {
         cache?.let { return it }
-        return runBlocking {
-            val c = dao(context).get() ?: WebDavConfigEntity()
-            cache = c
-            c
+        val default = WebDavConfigEntity()
+        cache = default
+        NzApplication.appScope.launch {
+            cache = dao(context).get() ?: default
         }
+        return default
     }
 
     private fun persist(context: Context, config: WebDavConfigEntity) {
         cache = config
-        runBlocking { dao(context).upsert(config) }
+        NzApplication.appScope.launch {
+            dao(context).upsert(config)
+        }
     }
 
     fun getUrl(context: Context): String = current(context).url

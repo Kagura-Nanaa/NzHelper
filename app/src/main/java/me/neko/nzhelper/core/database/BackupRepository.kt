@@ -26,6 +26,15 @@ object BackupRepository {
 
     private val gson = NzApplication.gson
 
+    /** 全局复用的 OkHttpClient 单例，避免每次请求创建新实例 */
+    private val okHttpClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(CONNECT_TIMEOUT, TimeUnit.MILLISECONDS)
+            .readTimeout(READ_TIMEOUT, TimeUnit.MILLISECONDS)
+            .writeTimeout(READ_TIMEOUT, TimeUnit.MILLISECONDS)
+            .build()
+    }
+
     private fun buildAuthHeader(context: Context): String? {
         val user = WebDavSettings.getUsername(context)
         val pass = WebDavSettings.getPassword(context)
@@ -53,21 +62,13 @@ object BackupRepository {
         return "$baseUrl$encodedPath$finalFileName"
     }
 
-    private fun newOkHttpClient(): OkHttpClient {
-        return OkHttpClient.Builder()
-            .connectTimeout(CONNECT_TIMEOUT, TimeUnit.MILLISECONDS)
-            .readTimeout(READ_TIMEOUT, TimeUnit.MILLISECONDS)
-            .writeTimeout(READ_TIMEOUT, TimeUnit.MILLISECONDS)
-            .build()
-    }
-
     private fun ensureRemoteDirectory(context: Context): Boolean {
         val baseUrl = WebDavSettings.getUrl(context).trimEnd('/')
         val remotePath = WebDavSettings.getRemotePath(context).trim().trimEnd('/')
         if (remotePath.isBlank() || remotePath == "/") return true
 
         val auth = buildAuthHeader(context) ?: return false
-        val client = newOkHttpClient()
+        val client = okHttpClient
 
         val segments = remotePath.split("/").filter { it.isNotBlank() }
         var currentUrl = baseUrl
@@ -110,7 +111,7 @@ object BackupRepository {
             .header("Content-Type", "application/octet-stream")
             .build()
 
-        return newOkHttpClient().newCall(request).execute().use { it.code }
+        return okHttpClient.newCall(request).execute().use { it.code }
     }
 
     suspend fun exportNzBytes(
@@ -277,7 +278,7 @@ object BackupRepository {
                             .header("Authorization", auth)
                             .build()
                         try {
-                            newOkHttpClient().newCall(deleteRequest).execute().close()
+                            okHttpClient.newCall(deleteRequest).execute().close()
                         } catch (_: Exception) {
                         }
 
@@ -321,7 +322,7 @@ object BackupRepository {
                 .header("Authorization", auth)
                 .build()
 
-            newOkHttpClient().newCall(request).execute().use { resp ->
+            okHttpClient.newCall(request).execute().use { resp ->
                 if (!resp.isSuccessful) {
                     val msg = when (resp.code) {
                         404, 403, 405 -> "恢复失败: 服务器上未找到备份文件 (HTTP ${resp.code})"
@@ -380,7 +381,7 @@ object BackupRepository {
                 .header("Depth", "0")
                 .build()
 
-            newOkHttpClient().newCall(request).execute().use { resp ->
+            okHttpClient.newCall(request).execute().use { resp ->
                 when {
                     resp.isSuccessful || resp.code == 207 -> true to "连接成功"
                     resp.code == 401 -> false to "用户名或密码错误"

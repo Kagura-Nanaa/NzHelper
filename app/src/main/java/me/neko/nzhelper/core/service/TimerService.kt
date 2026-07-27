@@ -1,6 +1,5 @@
 package me.neko.nzhelper.core.service
 
-import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.PendingIntent
 import android.app.Service
@@ -173,17 +172,6 @@ class TimerService : Service() {
     override fun onDestroy() {
         handler.removeCallbacks(tickRunnable)
         super.onDestroy()
-    }
-
-    @SuppressLint("DefaultLocale")
-    private fun formatTime(totalSeconds: Int): String {
-        val h = totalSeconds / 3600
-        val m = (totalSeconds % 3600) / 60
-        val s = totalSeconds % 60
-        return buildString {
-            if (h > 0) append(String.format("%02d:", h))
-            append(String.format("%02d:%02d", m, s))
-        }
     }
 
     companion object {
