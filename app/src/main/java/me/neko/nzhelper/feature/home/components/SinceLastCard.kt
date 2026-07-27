@@ -31,8 +31,9 @@ import me.neko.nzhelper.feature.statistics.model.LatestSessionInfo
 
 @Composable
 fun SinceLastCard(
+    modifier: Modifier = Modifier,
     latestInfo: LatestSessionInfo?,
-    modifier: Modifier = Modifier
+    greeting: String = ""
 ) {
     val isError = latestInfo?.isErrorState == true
     val onSurface = MaterialTheme.colorScheme.onSurface
@@ -69,6 +70,15 @@ fun SinceLastCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = onSurfaceVariant.copy(alpha = 0.6f)
                 )
+                if (greeting.isNotEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = greeting,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium,
+                        color = accentColor
+                    )
+                }
             }
         } else {
             Column(
@@ -171,9 +181,8 @@ fun SinceLastCard(
                             .background(accentColor.copy(alpha = 0.5f))
                     )
                     Text(
-                        text = latestInfo.detailText,
-                        style = MaterialTheme.typography.bodySmall,
-                        fontWeight = FontWeight.Medium,
+                        text = greeting.ifBlank { latestInfo.detailText },
+                        style = MaterialTheme.typography.bodyMedium,
                         color = onSurfaceVariant,
                         modifier = Modifier.weight(1f)
                     )

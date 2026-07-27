@@ -166,6 +166,10 @@ fun HomeScreen(
         derivedStateOf { StatisticsRepository.calculateLatestInfo(sessions) }
     }
 
+    val greetingSubtitle by remember(nowTick) {
+        derivedStateOf { timeBasedGreeting() }
+    }
+
     Scaffold(
         containerColor = MaterialTheme.colorScheme.surfaceContainer,
         topBar = {
@@ -256,7 +260,7 @@ fun HomeScreen(
                     }
                 }
                 item {
-                    SinceLastCard(latestInfo = latestInfo)
+                    SinceLastCard(latestInfo = latestInfo, greeting = greetingSubtitle)
                 }
             }
         }
@@ -369,4 +373,51 @@ fun HomeScreen(
 @Composable
 fun HomeScreenPreview() {
     HomeScreen()
+}
+
+private fun timeBasedGreeting(): String {
+    val hour = LocalDateTime.now().hour
+    return when (hour) {
+        in 0..4 -> listOf(
+            "夜深啦，困了也要照顾好自己哦",
+            "凌晨时分，好梦正酣～",
+            "这么晚还不睡，明天会没精神的呀"
+        )
+
+        in 5..6 -> listOf(
+            "晨光微熹，又是元气满满的一天",
+            "早起的鸟儿有虫吃～"
+        )
+
+        in 7..8 -> listOf(
+            "早上好，今天也要开开心心的",
+            "新的一天，新的开始～"
+        )
+
+        in 9..11 -> listOf(
+            "上午好，专注的时光最珍贵",
+            "阳光正好，微风不燥～"
+        )
+
+        in 12..13 -> listOf(
+            "午餐时间，记得吃点好的犒劳自己",
+            "午后小憩，劳逸结合～"
+        )
+
+        in 14..17 -> listOf(
+            "下午好，再坚持一下就胜利啦",
+            "困了吗？起来活动一下吧～"
+        )
+
+        in 18..19 -> listOf(
+            "日落西山，该放松一下了",
+            "下班快乐，享受属于自己的时光吧～"
+        )
+
+        else -> listOf(
+            "晚上好，卸下一整天的疲惫吧",
+            "夜深了，别熬夜，好好爱自己",
+            "睡前清空烦恼，明天会更好的～"
+        )
+    }.random()
 }
