@@ -1,0 +1,201 @@
+package me.neko.nzhelper.feature.home.components
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Lightbulb
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import me.neko.nzhelper.core.model.Session
+import java.time.LocalDateTime
+
+enum class TipType { PRAISE, REMINDER, INFO }
+
+data class HealthTip(
+    val message: String,
+    val type: TipType
+)
+
+@Composable
+fun HealthTipCard(
+    tip: HealthTip? = null,
+    aiTip: String? = null,
+    aiLoading: Boolean = false,
+    isLoading: Boolean = false,
+    onRefreshAi: (() -> Unit)? = null,
+    modifier: Modifier = Modifier
+) {
+    val isAi = aiTip != null
+    val message = aiTip ?: tip?.message ?: ""
+    val color = if (isAi) {
+        MaterialTheme.colorScheme.tertiary
+    } else when (tip?.type) {
+        TipType.PRAISE -> MaterialTheme.colorScheme.primary
+        TipType.REMINDER -> MaterialTheme.colorScheme.tertiary
+        TipType.INFO -> MaterialTheme.colorScheme.secondary
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceBright
+        )
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = if (isAi) Icons.Outlined.AutoAwesome else Icons.Outlined.Lightbulb,
+                    contentDescription = null,
+                    tint = color,
+                    modifier = Modifier.size(20.dp)
+                )
+                Text(
+                    text = if (isAi) "AI 健康建议" else "健康小贴士",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Medium,
+                    color = color,
+                    modifier = Modifier.weight(1f)
+                )
+                if (isAi) {
+                    Box(
+                        modifier = Modifier.size(28.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (aiLoading) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                                color = color
+                            )
+                        } else if (onRefreshAi != null) {
+                            IconButton(
+                                onClick = onRefreshAi,
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Icon(
+                                    Icons.Outlined.Refresh,
+                                    "刷新 AI 分析",
+                                    tint = color,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.size(8.dp))
+            if (isLoading && message.isEmpty()) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        "分析中...",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            } else {
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+fun analyzeHealthTip(sessions: List<Session>): HealthTip? {
+    val now = LocalDateTime.now()
+    val weekAgo = now.minusDays(7)
+    val recent = sessions.filter { !it.timestamp.isBefore(weekAgo) && !it.timestamp.isAfter(now) }
+
+    if (sessions.isEmpty()) return null
+    if (recent.isEmpty()) {
+        return HealthTip(
+            message = "最近一周还没有记录，偶尔放松一下也很正常，别给自己太大压力～",
+            type = TipType.INFO
+        )
+    }
+
+    val count = recent.size
+    val daysWithRecords = recent.map { it.timestamp.toLocalDate() }.distinct().size
+
+    val lateNightCount = recent.count { it.timestamp.hour >= 23 }
+    val lateNightRatio = lateNightCount.toFloat() / count
+
+    val sorted = recent.sortedBy { it.timestamp }
+    var maxGapDays = 0L
+    for (i in 1 until sorted.size) {
+        val gap = sorted[i].timestamp.toLocalDate().toEpochDay() -
+                sorted[i - 1].timestamp.toLocalDate().toEpochDay()
+        if (gap > maxGapDays) maxGapDays = gap
+    }
+
+    return when {
+        count >= 8 -> HealthTip(
+            "最近一周频率偏高（$count 次），频繁可能会影响精力和专注力，试试延长间隔、多休息～",
+            TipType.REMINDER
+        )
+
+        count >= 6 -> HealthTip(
+            "这周频率偏密，记得多补水、适当休息，身体是革命的本钱 💪",
+            TipType.REMINDER
+        )
+
+        lateNightRatio > 0.5f -> HealthTip(
+            "最近深夜时段偏多，睡眠不足会影响第二天的状态，试着早点休息吧 🌙",
+            TipType.REMINDER
+        )
+
+        maxGapDays >= 5 -> HealthTip(
+            "距离上次记录已经好几天了，别忘了偶尔释放一下压力，放松心情～",
+            TipType.INFO
+        )
+
+        count >= 3 -> HealthTip(
+            "频率适中（$daysWithRecords 天 $count 次），生活工作两不误，继续保持～",
+            TipType.PRAISE
+        )
+
+        count >= 2 -> HealthTip(
+            "节奏舒缓，松弛有度最自在，想记录的时候就来吧～",
+            TipType.PRAISE
+        )
+
+        else -> HealthTip(
+            "这周只记录了 $count 次，频率偏低很正常，别给自己压力，顺其自然就好～",
+            TipType.INFO
+        )
+    }
+}

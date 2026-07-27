@@ -52,11 +52,13 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.launch
+import me.neko.nzhelper.core.ai.AiSettings
 import me.neko.nzhelper.core.auto.AutoTagRules
 import me.neko.nzhelper.core.crash.CrashLogManager
 import me.neko.nzhelper.core.datastore.AgeGroupSettings
 import me.neko.nzhelper.core.datastore.TagSettings
 import me.neko.nzhelper.feature.about.AboutActivity
+import me.neko.nzhelper.feature.ai.AiConfigActivity
 import me.neko.nzhelper.feature.backup.BackupActivity
 import me.neko.nzhelper.feature.crash.CrashLogActivity
 import me.neko.nzhelper.feature.lock.AppLockManager
@@ -112,6 +114,18 @@ fun SettingsScreen() {
         AutoTagRules.setEnabled(context, enabled)
     }
 
+    fun buildAiSubtitle(ctx: Context, enabled: Boolean): String {
+        if (!enabled) return "AI 分析记录数据 · 点击配置"
+        val p = AiSettings.getActiveProvider(ctx)
+        return if (p != null) "已启用模型：${p.model}"
+        else "已启用 · 点击配置"
+    }
+
+    var aiEnabled by remember { mutableStateOf(AiSettings.isEnabled(context)) }
+    var aiSubtitle by remember {
+        mutableStateOf(buildAiSubtitle(context, aiEnabled))
+    }
+
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
@@ -121,6 +135,8 @@ fun SettingsScreen() {
                     unreadCrashCount = CrashLogManager.unreadCount(context)
                 }
                 hasGesturePassword = GestureLockManager.hasGesturePassword(context)
+                aiEnabled = AiSettings.isEnabled(context)
+                aiSubtitle = buildAiSubtitle(context, aiEnabled)
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -283,6 +299,15 @@ fun SettingsScreen() {
                                 checked = autoTagEnabled,
                                 onCheckedChange = toggleAutoTag
                             )
+                        }
+                    )
+                    SettingsDivider()
+                    SettingsItem(
+                        icon = Icons.Outlined.AutoAwesome,
+                        title = "AI 健康建议",
+                        subtitle = aiSubtitle,
+                        onClick = {
+                            context.startActivity(Intent(context, AiConfigActivity::class.java))
                         }
                     )
                 }

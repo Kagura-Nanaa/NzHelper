@@ -62,6 +62,10 @@
             android:exported="false" />
 
         <activity
+            android:name=".feature.ai.AiConfigActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".feature.crash.CrashLogActivity"
             android:exported="false" />
 

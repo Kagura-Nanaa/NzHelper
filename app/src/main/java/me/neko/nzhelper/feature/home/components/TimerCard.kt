@@ -26,7 +26,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Replay
@@ -35,6 +37,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButtonDefaults
@@ -52,11 +55,14 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import me.neko.nzhelper.core.util.formatTime
+import me.neko.nzhelper.feature.statistics.model.LatestSessionInfo
 
 @Composable
 fun TimerCard(
     elapsedSeconds: Int,
     isRunning: Boolean,
+    latestInfo: LatestSessionInfo? = null,
+    isLoading: Boolean = false,
     onToggleRun: () -> Unit,
     onStop: () -> Unit,
     onReset: () -> Unit,
@@ -167,6 +173,56 @@ fun TimerCard(
                 color = timeColor,
                 modifier = Modifier.fillMaxWidth()
             )
+
+            if (isLoading || latestInfo != null) {
+                Spacer(Modifier.height(16.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.5f))
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (isLoading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "加载中...",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = onSurfaceVariant
+                        )
+                    } else if (latestInfo != null) {
+                        Icon(
+                            Icons.Outlined.Schedule, null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            "距上次 · ${latestInfo.displayDate}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = onSurfaceVariant,
+                            modifier = Modifier.weight(1f)
+                        )
+                        val (daysText, daysUnit) = when (latestInfo.daysAgo) {
+                            0L -> "今天" to ""
+                            1L -> "昨天" to ""
+                            else -> latestInfo.daysAgo.toString() to " 天前"
+                        }
+                        Text(
+                            "$daysText$daysUnit",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
 
             Spacer(Modifier.height(24.dp))
 
