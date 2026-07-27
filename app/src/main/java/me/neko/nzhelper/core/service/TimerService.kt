@@ -5,18 +5,25 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.os.Binder
-import android.os.Handler
 import android.os.IBinder
-import android.os.Looper
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import me.neko.nzhelper.MainActivity
 import me.neko.nzhelper.R
 import me.neko.nzhelper.core.notification.NotificationUtil
 import me.neko.nzhelper.core.util.formatTime
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * 前台计时服务
@@ -34,19 +41,11 @@ class TimerService : Service() {
     private var accumulatedSec: Int = 0
     private var baseTimeMs: Long = 0L
 
-    private val handler = Handler(Looper.getMainLooper())
-    private val tickRunnable = object : Runnable {
-        override fun run() {
-            if (_isRunning.value) {
-                val currentSec =
-                    accumulatedSec + ((SystemClock.elapsedRealtime() - baseTimeMs) / 1000).toInt()
-                if (_elapsedSec.value != currentSec) {
-                    _elapsedSec.value = currentSec
-                }
-                handler.postDelayed(this, 1000 - (SystemClock.elapsedRealtime() % 1000))
-            }
-        }
-    }
+    /** 绑定 Service 生命周期的协程作用域，onDestroy 时统一取消 */
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+    /** 当前计时 tick 协程，暂停/停止/重置时取消 */
+    private var tickJob: Job? = null
 
     override fun onBind(intent: Intent): IBinder = binder
 
@@ -70,8 +69,17 @@ class TimerService : Service() {
         _isRunning.value = true
         baseTimeMs = SystemClock.elapsedRealtime()
 
-        handler.removeCallbacks(tickRunnable)
-        handler.post(tickRunnable)
+        tickJob?.cancel()
+        tickJob = serviceScope.launch {
+            while (isActive) {
+                val currentSec =
+                    accumulatedSec + ((SystemClock.elapsedRealtime() - baseTimeMs) / 1000).toInt()
+                if (_elapsedSec.value != currentSec) {
+                    _elapsedSec.value = currentSec
+                }
+                delay((1000L - (SystemClock.elapsedRealtime() % 1000)).milliseconds)
+            }
+        }
 
         startForeground(NOTIF_ID, buildNotification(_elapsedSec.value))
     }
@@ -80,7 +88,7 @@ class TimerService : Service() {
         if (!_isRunning.value) return
 
         _isRunning.value = false
-        handler.removeCallbacks(tickRunnable)
+        tickJob?.cancel()
 
         accumulatedSec = _elapsedSec.value
         baseTimeMs = 0L
@@ -89,30 +97,27 @@ class TimerService : Service() {
     }
 
     private fun stopTimer() {
-        handler.removeCallbacks(tickRunnable)
+        tickJob?.cancel()
         _isRunning.value = false
         accumulatedSec = 0
         _elapsedSec.value = 0
         baseTimeMs = 0L
 
-        stopForeground(Service.STOP_FOREGROUND_REMOVE)
+        stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
     private fun resetTimer() {
-        handler.removeCallbacks(tickRunnable)
+        tickJob?.cancel()
         _isRunning.value = false
         accumulatedSec = 0
         _elapsedSec.value = 0
         baseTimeMs = 0L
 
-        stopForeground(Service.STOP_FOREGROUND_REMOVE)
+        stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
-    /**
-     * 构建带有系统 Chronometer 的通知
-     */
     private fun buildNotification(elapsed: Int): Notification {
         val isRunning = _isRunning.value
 
@@ -185,7 +190,8 @@ class TimerService : Service() {
     }
 
     override fun onDestroy() {
-        handler.removeCallbacks(tickRunnable)
+        tickJob?.cancel()
+        serviceScope.cancel()
         super.onDestroy()
     }
 
