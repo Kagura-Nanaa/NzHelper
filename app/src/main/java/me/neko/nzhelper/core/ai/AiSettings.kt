@@ -76,7 +76,16 @@ object AiSettings {
             val type = com.google.gson.reflect.TypeToken.getParameterized(
                 List::class.java, AiProvider::class.java
             ).type
-            gson.fromJson<List<AiProvider>>(json, type) ?: emptyList()
+            val raw = gson.fromJson<List<AiProvider>>(json, type) ?: emptyList()
+            var fixed = false
+            val fixedList = raw.map { p ->
+                if (p.id.isBlank()) {
+                    fixed = true
+                    p.copy(id = java.util.UUID.randomUUID().toString().take(8))
+                } else p
+            }
+            if (fixed) saveProviders(context, fixedList)
+            fixedList
         } catch (_: Exception) {
             emptyList()
         }

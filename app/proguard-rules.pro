@@ -37,6 +37,7 @@
 
 # 保留数据模型类本身（字段名 + 默认构造），防止 Gson UnsafeAllocator 绕过构造时字段丢失
 -keep class me.neko.nzhelper.core.model.** { *; }
+-keep class me.neko.nzhelper.core.ai.** { *; }
 
 # 保留 Gson TypeAdapter / JsonSerializer / JsonDeserializer 实现类
 -keep class * implements com.google.gson.TypeAdapter { *; }
