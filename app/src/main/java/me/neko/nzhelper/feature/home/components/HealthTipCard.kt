@@ -36,15 +36,18 @@ data class HealthTip(
 
 @Composable
 fun HealthTipCard(
+    modifier: Modifier = Modifier,
     tip: HealthTip? = null,
     aiTip: String? = null,
     aiLoading: Boolean = false,
-    isLoading: Boolean = false,
-    onRefreshAi: (() -> Unit)? = null,
-    modifier: Modifier = Modifier
+    onRefreshAi: (() -> Unit)? = null
 ) {
-    val isAi = aiTip != null
-    val message = aiTip ?: tip?.message ?: ""
+    val isAi = onRefreshAi != null
+    val message = when {
+        aiTip != null -> aiTip
+        isAi -> "点击刷新获取 AI 建议"
+        else -> tip?.message ?: ""
+    }
     val color = if (isAi) {
         MaterialTheme.colorScheme.tertiary
     } else when (tip?.type) {
@@ -91,7 +94,7 @@ fun HealthTipCard(
                                 strokeWidth = 2.dp,
                                 color = color
                             )
-                        } else if (onRefreshAi != null) {
+                        } else {
                             IconButton(
                                 onClick = onRefreshAi,
                                 modifier = Modifier.size(28.dp)
@@ -108,7 +111,7 @@ fun HealthTipCard(
                 }
             }
             Spacer(Modifier.size(8.dp))
-            if (isLoading && message.isEmpty()) {
+            if (isAi && aiLoading) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -116,10 +119,10 @@ fun HealthTipCard(
                     CircularProgressIndicator(
                         modifier = Modifier.size(16.dp),
                         strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = color
                     )
                     Text(
-                        "分析中...",
+                        "AI 分析中...",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -128,7 +131,10 @@ fun HealthTipCard(
                 Text(
                     text = message,
                     style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = if (isAi && aiTip == null) MaterialTheme.colorScheme.onSurfaceVariant.copy(
+                        alpha = 0.6f
+                    )
+                    else MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }

@@ -26,10 +26,14 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -45,8 +49,7 @@ import kotlinx.coroutines.launch
 import me.neko.nzhelper.core.ai.AiAnalyzer
 import me.neko.nzhelper.core.ai.AiProvider
 import me.neko.nzhelper.core.ai.AiSettings
-
-private val API_FORMATS = listOf("OpenAI" to "OpenAI 兼容", "Anthropic" to "Anthropic")
+import me.neko.nzhelper.core.ai.PresetProvider
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -57,18 +60,28 @@ fun AiProviderEditDialog(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val isNew = provider.id.isEmpty()
 
-    var name by remember { mutableStateOf(provider.name) }
-    var baseUrl by remember { mutableStateOf(provider.baseUrl) }
+    val presetKeys = PresetProvider.ALL.map { it.key }
+    val initialPresetIdx = if (isNew) 0
+    else presetKeys.indexOf(provider.modeKey).coerceAtLeast(0)
+    var selectedPresetIdx by remember { mutableIntStateOf(initialPresetIdx) }
+
+    val currentPreset = PresetProvider.ALL[selectedPresetIdx]
+    val initialCompatIdx = if (isNew) 0
+    else currentPreset.compatModes.indexOfFirst { it.key == provider.compatKey }.coerceAtLeast(0)
+    var selectedCompatIdx by remember { mutableIntStateOf(initialCompatIdx) }
+    val currentCompat = currentPreset.compatModes[selectedCompatIdx]
+    var name by remember { mutableStateOf(if (isNew) currentPreset.label else provider.name) }
+    var baseUrl by remember { mutableStateOf(if (isNew) currentPreset.baseUrl else provider.baseUrl) }
     var apiKey by remember { mutableStateOf(provider.apiKey) }
-    var apiFormat by remember { mutableStateOf(provider.apiFormat) }
-    var model by remember { mutableStateOf(provider.model) }
+    var model by remember { mutableStateOf(if (isNew) currentPreset.defaultModel else provider.model) }
     var isActive by remember { mutableStateOf(provider.isActive) }
     var keyVisible by remember { mutableStateOf(false) }
+    var compatExpanded by remember { mutableStateOf(false) }
 
     var models by remember { mutableStateOf(provider.cachedModels) }
     var modelExpanded by remember { mutableStateOf(false) }
-    var formatExpanded by remember { mutableStateOf(false) }
     var testing by remember { mutableStateOf(false) }
     var testResult by remember { mutableStateOf<String?>(null) }
     var testOk by remember { mutableStateOf(false) }
@@ -78,16 +91,20 @@ fun AiProviderEditDialog(
         testResult = null
         testOk = false
         scope.launch {
-            val result = AiAnalyzer.fetchModels(baseUrl, apiKey)
+            val result = AiAnalyzer.fetchModels(
+                baseUrl,
+                apiKey,
+                currentPreset.mode,
+                currentCompat.extraFields
+            )
             testing = false
             result.fold(
                 onSuccess = { list ->
                     models = list
                     testOk = true
-                    testResult = "连接成功，找到 ${list.size} 个模型"
-                    if (model.isBlank() || model !in list) {
-                        model = list.firstOrNull() ?: model
-                    }
+                    testResult =
+                        "${baseUrl.trimEnd('/')}${currentPreset.mode.chatPath}\n${list.size} 个模型可用"
+                    if (model.isBlank() || model !in list) model = list.firstOrNull() ?: model
                 },
                 onFailure = { e ->
                     testResult = "连接失败：${e.message ?: "未知错误"}"
@@ -96,45 +113,84 @@ fun AiProviderEditDialog(
         }
     }
 
-    val isNew = provider.id.isEmpty()
-    val saveEnabled = name.isNotBlank() && baseUrl.isNotBlank() && apiKey.isNotBlank()
+    val saveEnabled = baseUrl.isNotBlank() && apiKey.isNotBlank()
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (isNew) "添加供应商" else "编辑供应商") },
         text = {
             Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                    PresetProvider.ALL.forEachIndexed { idx, preset ->
+                        SegmentedButton(
+                            selected = selectedPresetIdx == idx,
+                            onClick = {
+                                selectedPresetIdx = idx
+                                selectedCompatIdx = 0
+                                name = preset.label
+                                baseUrl = preset.baseUrl
+                                model = preset.defaultModel
+                                testOk = false
+                                models = emptyList()
+                            },
+                            shape = SegmentedButtonDefaults.itemShape(
+                                index = idx,
+                                count = PresetProvider.ALL.size
+                            )
+                        ) { Text(preset.label) }
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
                     label = { Text("名称") },
                     placeholder = { Text("如 OpenAI、DeepSeek、通义千问") },
                     singleLine = true,
-                    isError = name.isBlank() && name.isNotEmpty(),
-                    supportingText = if (name.isBlank() && name.isNotEmpty()) {
-                        { Text("名称不能为空") }
-                    } else null,
                     modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = baseUrl,
-                    onValueChange = { baseUrl = it; testOk = false },
-                    label = { Text("Base URL") },
-                    placeholder = { Text("https://api.openai.com/v1") },
-                    singleLine = true,
-                    isError = baseUrl.isBlank() && baseUrl.isNotEmpty(),
-                    supportingText = if (baseUrl.isBlank() && baseUrl.isNotEmpty()) {
-                        { Text("Base URL 不能为空") }
-                    } else null,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(8.dp))
+
+                if (currentPreset.compatModes.size > 1) {
+                    ExposedDropdownMenuBox(
+                        expanded = compatExpanded,
+                        onExpandedChange = { compatExpanded = it }
+                    ) {
+                        OutlinedTextField(
+                            value = currentCompat.label,
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("兼容模式") },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = compatExpanded) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable)
+                        )
+                        ExposedDropdownMenu(
+                            expanded = compatExpanded,
+                            onDismissRequest = { compatExpanded = false }
+                        ) {
+                            currentPreset.compatModes.forEachIndexed { idx, cm ->
+                                DropdownMenuItem(
+                                    text = { Text(cm.label) },
+                                    onClick = {
+                                        selectedCompatIdx = idx
+                                        compatExpanded = false
+                                        testOk = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
+
                 OutlinedTextField(
                     value = apiKey,
                     onValueChange = { apiKey = it; testOk = false },
                     label = { Text("API Key") },
-                    placeholder = { Text("") },
+                    placeholder = { Text("sk-...") },
                     singleLine = true,
                     isError = apiKey.isBlank() && apiKey.isNotEmpty(),
                     supportingText = if (apiKey.isBlank() && apiKey.isNotEmpty()) {
@@ -155,34 +211,41 @@ fun AiProviderEditDialog(
                 )
                 Spacer(Modifier.height(8.dp))
 
-                ExposedDropdownMenuBox(
-                    expanded = formatExpanded,
-                    onExpandedChange = { formatExpanded = it }
-                ) {
-                    OutlinedTextField(
-                        value = API_FORMATS.firstOrNull { it.first == apiFormat }?.second
-                            ?: apiFormat,
-                        onValueChange = {},
-                        readOnly = true,
-                        label = { Text("API 格式") },
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = formatExpanded) },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable)
-                    )
-                    ExposedDropdownMenu(
-                        expanded = formatExpanded,
-                        onDismissRequest = { formatExpanded = false }
+                OutlinedTextField(
+                    value = baseUrl,
+                    onValueChange = { baseUrl = it; testOk = false },
+                    label = { Text("Base URL") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(8.dp))
+
+                if (models.isNotEmpty()) {
+                    ExposedDropdownMenuBox(
+                        expanded = modelExpanded,
+                        onExpandedChange = { modelExpanded = it }
                     ) {
-                        API_FORMATS.forEach { (value, label) ->
-                            DropdownMenuItem(
-                                text = { Text(label) },
-                                onClick = {
-                                    apiFormat = value
-                                    formatExpanded = false
-                                    testOk = false
-                                }
-                            )
+                        OutlinedTextField(
+                            value = model,
+                            onValueChange = { model = it },
+                            label = { Text("模型") },
+                            singleLine = true,
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = modelExpanded) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable)
+                        )
+                        ExposedDropdownMenu(
+                            expanded = modelExpanded,
+                            onDismissRequest = { modelExpanded = false }
+                        ) {
+                            models.forEach { m ->
+                                DropdownMenuItem(
+                                    text = { Text(m) },
+                                    onClick = { model = m; modelExpanded = false }
+                                )
+                            }
                         }
                     }
                 }
@@ -222,36 +285,6 @@ fun AiProviderEditDialog(
                         )
                     }
                 }
-
-                if (models.isNotEmpty()) {
-                    Spacer(Modifier.height(12.dp))
-                    ExposedDropdownMenuBox(
-                        expanded = modelExpanded,
-                        onExpandedChange = { modelExpanded = it }
-                    ) {
-                        OutlinedTextField(
-                            value = model,
-                            onValueChange = {},
-                            readOnly = true,
-                            label = { Text("模型") },
-                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = modelExpanded) },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable)
-                        )
-                        ExposedDropdownMenu(
-                            expanded = modelExpanded,
-                            onDismissRequest = { modelExpanded = false }
-                        ) {
-                            models.forEach { m ->
-                                DropdownMenuItem(
-                                    text = { Text(m) },
-                                    onClick = { model = m; modelExpanded = false }
-                                )
-                            }
-                        }
-                    }
-                }
             }
         },
         confirmButton = {
@@ -259,11 +292,13 @@ fun AiProviderEditDialog(
                 onClick = {
                     val p = AiProvider(
                         id = provider.id.ifBlank { java.util.UUID.randomUUID().toString().take(8) },
-                        name = name,
+                        name = name.ifBlank { currentPreset.label },
                         baseUrl = baseUrl,
                         apiKey = apiKey,
-                        apiFormat = apiFormat,
-                        model = model,
+                        modeKey = currentPreset.mode.key,
+                        model = model.ifBlank { currentPreset.defaultModel },
+                        extraFieldsJson = currentCompat.extraFields?.toString(),
+                        compatKey = if (currentPreset.compatModes.size > 1) currentCompat.key else null,
                         isActive = isActive,
                         cachedModels = models
                     )

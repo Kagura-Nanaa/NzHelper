@@ -2,24 +2,40 @@ package me.neko.nzhelper.core.ai
 
 import android.content.Context
 import androidx.core.content.edit
+import com.google.gson.JsonObject
+import com.google.gson.JsonParser
 import me.neko.nzhelper.NzApplication
+import java.util.UUID.randomUUID
 
 data class AiProvider(
     val id: String = "",
     val name: String = "",
     val baseUrl: String = "",
     val apiKey: String = "",
-    val apiFormat: String = "OpenAI",
+    val modeKey: String = "openai",
     val model: String = "gpt-4o-mini",
     val isActive: Boolean = false,
-    val cachedModels: List<String> = emptyList()
+    val cachedModels: List<String> = emptyList(),
+    val extraFieldsJson: String? = null,
+    val compatKey: String? = null
 ) {
     val isComplete: Boolean
         get() = name.isNotBlank() && apiKey.isNotBlank() && baseUrl.isNotBlank()
 
+    val mode: ApiMode get() = ApiMode.fromKey(modeKey)
+
+    val extraFields: JsonObject?
+        get() = extraFieldsJson?.let {
+            try {
+                JsonParser.parseString(it).asJsonObject
+            } catch (_: Exception) {
+                null
+            }
+        }
+
     companion object {
         fun create(): AiProvider = AiProvider(
-            id = java.util.UUID.randomUUID().toString().take(8)
+            id = randomUUID().toString().take(8)
         )
     }
 }
@@ -76,16 +92,7 @@ object AiSettings {
             val type = com.google.gson.reflect.TypeToken.getParameterized(
                 List::class.java, AiProvider::class.java
             ).type
-            val raw = gson.fromJson<List<AiProvider>>(json, type) ?: emptyList()
-            var fixed = false
-            val fixedList = raw.map { p ->
-                if (p.id.isBlank()) {
-                    fixed = true
-                    p.copy(id = java.util.UUID.randomUUID().toString().take(8))
-                } else p
-            }
-            if (fixed) saveProviders(context, fixedList)
-            fixedList
+            gson.fromJson<List<AiProvider>>(json, type) ?: emptyList()
         } catch (_: Exception) {
             emptyList()
         }
@@ -123,18 +130,6 @@ object AiSettings {
 
     fun getActiveProvider(context: Context): AiProvider? =
         getProviders(context).firstOrNull { it.isActive }
-
-    fun getBaseUrl(context: Context): String =
-        getActiveProvider(context)?.baseUrl ?: "https://api.openai.com/v1"
-
-    fun getApiKey(context: Context): String =
-        getActiveProvider(context)?.apiKey ?: ""
-
-    fun getModel(context: Context): String =
-        getActiveProvider(context)?.model ?: "gpt-4o-mini"
-
-    fun getApiFormat(context: Context): String =
-        getActiveProvider(context)?.apiFormat ?: "OpenAI"
 
     fun isConfigured(context: Context): Boolean =
         getActiveProvider(context)?.isComplete == true

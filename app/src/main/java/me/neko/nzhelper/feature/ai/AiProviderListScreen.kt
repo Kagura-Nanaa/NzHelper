@@ -248,7 +248,7 @@ private fun ProviderCard(
                 Text(
                     text = if (provider.cachedModels.isNotEmpty())
                         "${provider.model} · ${provider.cachedModels.size} 个模型"
-                    else provider.apiFormat,
+                    else provider.mode.label,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,

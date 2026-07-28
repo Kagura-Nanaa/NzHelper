@@ -1,6 +1,7 @@
 package me.neko.nzhelper.core.ai
 
 import android.content.Context
+import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -19,82 +20,137 @@ object AiAnalyzer {
         .readTimeout(20, TimeUnit.SECONDS)
         .build()
 
-    /**
-     * 测试连接并拉取可用模型列表。返回模型 ID 列表或错误信息。
-     */
     suspend fun fetchModels(
         baseUrl: String,
-        apiKey: String
+        apiKey: String,
+        mode: ApiMode,
+        extraFields: JsonObject? = null
     ): Result<List<String>> = withContext(Dispatchers.IO) {
+        val cleanBase = baseUrl.trimEnd('/')
+
+        val models = mode.modelsPath?.let { path ->
+            try {
+                val modelsUrl = when (mode.authType) {
+                    ApiMode.AuthType.QUERY_PARAM -> "$cleanBase$path?key=$apiKey"
+                    else -> "$cleanBase$path"
+                }
+                val reqBuilder = Request.Builder().url(modelsUrl)
+                when (mode.authType) {
+                    ApiMode.AuthType.BEARER -> reqBuilder.header("Authorization", "Bearer $apiKey")
+                    ApiMode.AuthType.X_API_KEY -> {
+                        reqBuilder.header("x-api-key", apiKey)
+                        reqBuilder.header("anthropic-version", "2023-06-01")
+                    }
+
+                    ApiMode.AuthType.QUERY_PARAM -> {}
+                }
+                val req = reqBuilder.build()
+                val resp = client.newCall(req).execute()
+                if (!resp.isSuccessful)
+                    return@withContext Result.failure(Exception("$cleanBase$path HTTP ${resp.code}"))
+                val root = JsonParser.parseString(resp.body.string()).asJsonObject
+                root.getAsJsonArray("data")
+                    ?.mapNotNull { it.asJsonObject.get("id")?.asString }?.sorted() ?: emptyList()
+            } catch (e: Exception) {
+                return@withContext Result.failure(e)
+            }
+        } ?: emptyList()
+
         try {
-            val url = baseUrl.trimEnd('/') + "/models"
-            val request = Request.Builder()
-                .url(url)
-                .header("Authorization", "Bearer $apiKey")
-                .build()
-            val response = client.newCall(request).execute()
-            if (!response.isSuccessful) {
-                return@withContext Result.failure(Exception("HTTP ${response.code}"))
+            val testModel = models.firstOrNull() ?: "test"
+            val testBody = mode.buildRequestBody(testModel, "", "hi", 1, extraFields)
+            val chatPath = mode.chatPath.replace("__MODEL__", testModel)
+            val url = when (mode.authType) {
+                ApiMode.AuthType.QUERY_PARAM -> "$cleanBase$chatPath?key=$apiKey"
+                else -> "$cleanBase$chatPath"
             }
-            val json = response.body.string()
-            val root = JsonParser.parseString(json).asJsonObject
-            val models = root.getAsJsonArray("data")
-                ?.mapNotNull { it.asJsonObject.get("id")?.asString }
-                ?.sorted()
-                ?: emptyList()
-            if (models.isEmpty()) {
-                return@withContext Result.failure(Exception("未找到可用模型"))
+            val reqBuilder = Request.Builder().url(url)
+                .post(testBody.toRequestBody("application/json".toMediaTypeOrNull()))
+                .header("Content-Type", "application/json")
+            when (mode.authType) {
+                ApiMode.AuthType.BEARER -> reqBuilder.header("Authorization", "Bearer $apiKey")
+                ApiMode.AuthType.X_API_KEY -> {
+                    reqBuilder.header("x-api-key", apiKey)
+                    reqBuilder.header("anthropic-version", "2023-06-01")
+                }
+
+                ApiMode.AuthType.QUERY_PARAM -> {}
             }
-            Result.success(models)
+            val req = reqBuilder.build()
+            val resp = client.newCall(req).execute()
+            if (!resp.isSuccessful)
+                return@withContext Result.failure(Exception("$url HTTP ${resp.code}"))
         } catch (e: Exception) {
-            Result.failure(e)
+            return@withContext Result.failure(e)
         }
+        Result.success(models)
     }
 
-    /**
-     * 调用 AI 接口分析最近一周数据并返回健康建议。
-     */
-    suspend fun analyze(context: Context, sessions: List<Session>): String? =
+    suspend fun analyze(context: Context, sessions: List<Session>): Result<String> =
         withContext(Dispatchers.IO) {
             if (!AiSettings.isEnabled(context) || !AiSettings.isConfigured(context))
-                return@withContext null
-
+                return@withContext Result.failure(Exception("AI 未启用或未配置供应商"))
             val now = LocalDateTime.now()
-            val weekAgo = now.minusDays(7)
             val recent = sessions.filter {
-                !it.timestamp.isBefore(weekAgo) && !it.timestamp.isAfter(now)
+                !it.timestamp.isBefore(now.minusDays(7)) && !it.timestamp.isAfter(now)
             }
-            if (recent.isEmpty()) return@withContext null
-
+            if (recent.isEmpty()) return@withContext Result.failure(Exception("最近7天无记录"))
             val count = recent.size
             val days = recent.map { it.timestamp.toLocalDate() }.distinct().size
             val lateNight = recent.count { it.timestamp.hour >= 23 }
-            val systemPrompt = buildSystemPrompt(context)
-            val userPrompt = buildUserPrompt(count, days, lateNight)
+
+            val provider = AiSettings.getActiveProvider(context)
+                ?: return@withContext Result.failure(Exception("无激活的供应商"))
+            val mode = provider.mode
+            val model = provider.model
+            val apiKey = provider.apiKey
+            val baseUrl = provider.baseUrl.trimEnd('/')
+            val chatPath = mode.chatPath.replace("__MODEL__", model)
+            val apiUrl = when (mode.authType) {
+                ApiMode.AuthType.QUERY_PARAM -> "$baseUrl$chatPath?key=$apiKey"
+                else -> "$baseUrl$chatPath"
+            }
+
+            val systemPrompt = "你是健康生活顾问，用户记录的是手淫数据。你的建议需简短、自然、不评判。"
+            val userPrompt = buildPrompt(context, count, days, lateNight)
+            val maxTokens = when (AiSettings.getPromptLength(context)) {
+                "short" -> 40; "detailed" -> 120; else -> 80
+            }
+            val body = mode.buildRequestBody(
+                model,
+                systemPrompt,
+                userPrompt,
+                maxTokens,
+                provider.extraFields
+            )
 
             try {
-                val apiUrl = AiSettings.getBaseUrl(context).trimEnd('/') + "/chat/completions"
-                val model = AiSettings.getModel(context)
-                val apiKey = AiSettings.getApiKey(context)
-                val body = buildJsonBody(model, systemPrompt, userPrompt, context)
-
-                val request = Request.Builder()
-                    .url(apiUrl)
+                val reqBuilder = Request.Builder().url(apiUrl)
                     .post(body.toRequestBody("application/json".toMediaTypeOrNull()))
-                    .header("Authorization", "Bearer $apiKey")
                     .header("Content-Type", "application/json")
-                    .build()
+                when (mode.authType) {
+                    ApiMode.AuthType.BEARER -> reqBuilder.header("Authorization", "Bearer $apiKey")
+                    ApiMode.AuthType.X_API_KEY -> {
+                        reqBuilder.header("x-api-key", apiKey)
+                        reqBuilder.header("anthropic-version", "2023-06-01")
+                    }
 
-                val response = client.newCall(request).execute()
-                val text = response.body.string()
-                if (!response.isSuccessful) return@withContext null
-                return@withContext parseResponse(text)
-            } catch (_: Exception) {
-                null
+                    ApiMode.AuthType.QUERY_PARAM -> {}
+                }
+                val req = reqBuilder.build()
+                val resp = client.newCall(req).execute()
+                if (!resp.isSuccessful)
+                    return@withContext Result.failure(Exception("$apiUrl HTTP ${resp.code}"))
+                val text = resp.body.string()
+                val content = mode.parseResponse(text)
+                    ?: return@withContext Result.failure(Exception("解析失败\n${text.take(400)}"))
+                return@withContext Result.success(content)
+            } catch (e: Exception) {
+                Result.failure(e)
             }
         }
 
-    private fun buildSystemPrompt(context: Context): String {
+    private fun buildPrompt(context: Context, count: Int, days: Int, lateNight: Int): String {
         val tone = when (AiSettings.getPromptTone(context)) {
             "professional" -> "你是专业健康顾问，回答严谨客观"
             "humorous" -> "你是幽默的健康顾问，回答轻松有趣"
@@ -103,57 +159,15 @@ object AiAnalyzer {
             "concise" -> "你是高效的健康助手，回答极其简洁"
             else -> "你是温暖的健康顾问，回答简短温馨"
         }
-        val length = when (AiSettings.getPromptLength(context)) {
+        val len = when (AiSettings.getPromptLength(context)) {
             "short" -> "限制30字以内"
             "detailed" -> "可以给80字左右的详细建议"
             else -> "限制50字以内"
         }
-        val custom = AiSettings.getPromptCustom(context).trim()
-            .takeIf { it.isNotBlank() }
-            ?.let { "。额外要求：$it" } ?: ""
-        return "$tone，$length，不要复述数据$custom。"
-    }
-
-    private fun buildUserPrompt(count: Int, days: Int, lateNight: Int): String {
-        val lateStr = if (lateNight > 0) "，其中 $lateNight 次在深夜（23点后）" else ""
-        return "根据最近7天数据：共${count}次，分布在${days}天${lateStr}，请给出健康建议。"
-    }
-
-    private fun buildJsonBody(
-        model: String,
-        systemPrompt: String,
-        userPrompt: String,
-        context: Context
-    ): String {
-        val maxTokens = when (AiSettings.getPromptLength(context)) {
-            "short" -> 40
-            "detailed" -> 120
-            else -> 80
-        }
-        return """
-        {
-          "model": "$model",
-          "messages": [
-            {"role": "system", "content": "$systemPrompt"},
-            {"role": "user", "content": "$userPrompt"}
-          ],
-          "max_tokens": $maxTokens,
-          "temperature": 0.8
-        }
-        """.trimIndent()
-    }
-
-    private fun parseResponse(json: String): String? {
-        return try {
-            val root = JsonParser.parseString(json).asJsonObject
-            root.getAsJsonArray("choices")
-                ?.get(0)?.asJsonObject
-                ?.getAsJsonObject("message")
-                ?.get("content")?.asString
-                ?.trim()
-                ?.takeIf { it.isNotBlank() }
-        } catch (_: Exception) {
-            null
-        }
+        val extra = AiSettings.getPromptCustom(context).trim()
+            .takeIf { it.isNotBlank() }?.let { "，$it" } ?: ""
+        val late = if (lateNight > 0) "，${lateNight}次在深夜" else ""
+        return "这是手淫记录：最近7天共${count}次，分${days}天${late}。" +
+                "用${tone}口吻给${len}的健康建议${extra}。只输出建议不要推理。"
     }
 }

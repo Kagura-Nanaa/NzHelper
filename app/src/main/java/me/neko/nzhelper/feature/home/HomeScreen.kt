@@ -55,7 +55,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.launch
+import me.neko.nzhelper.NzApplication
 import me.neko.nzhelper.core.ai.AiAnalyzer
 import me.neko.nzhelper.core.ai.AiSettings
 import me.neko.nzhelper.core.auto.AutoTagRules
@@ -67,7 +71,6 @@ import me.neko.nzhelper.core.model.SessionFormState
 import me.neko.nzhelper.core.service.TimerService
 import me.neko.nzhelper.feature.home.components.ConfirmResetDialog
 import me.neko.nzhelper.feature.home.components.ConfirmStopDialog
-import me.neko.nzhelper.feature.home.components.HealthTip
 import me.neko.nzhelper.feature.home.components.HealthTipCard
 import me.neko.nzhelper.feature.home.components.TimerCard
 import me.neko.nzhelper.feature.home.components.analyzeHealthTip
@@ -134,6 +137,16 @@ fun HomeScreen(
     val sessions = remember { mutableStateListOf<Session>() }
     var isLoading by remember { mutableStateOf(true) }
     var handledStopRequestId by remember { mutableIntStateOf(0) }
+    var resumeKey by remember { mutableIntStateOf(0) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) resumeKey++
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     LaunchedEffect(stopRequestId, timerService) {
         if (stopRequestId > handledStopRequestId && timerService != null) {
@@ -180,21 +193,25 @@ fun HomeScreen(
     fun refreshAi() {
         if (!AiSettings.isEnabled(context) || !AiSettings.isConfigured(context)) return
         aiLoading = true
-        scope.launch {
+        NzApplication.appScope.launch {
             val result = AiAnalyzer.analyze(context, sessions)
-            if (result != null) aiHealthTip = result
+            result.fold(
+                onSuccess = { aiHealthTip = it },
+                onFailure = { aiHealthTip = "❌ ${it.message ?: "未知错误"}" }
+            )
             aiLoading = false
         }
     }
 
-    // 数据加载完成后自动触发一次 AI 分析
-    LaunchedEffect(isLoading) {
-        if (!isLoading && AiSettings.isEnabled(context) && AiSettings.isConfigured(context)
-            && aiHealthTip == null
+    LaunchedEffect(resumeKey, sessions.isNotEmpty()) {
+        if (sessions.isNotEmpty() && AiSettings.isEnabled(context)
+            && AiSettings.isConfigured(context)
         ) {
             refreshAi()
         }
     }
+
+    val showAiCard = remember(resumeKey) { AiSettings.isEnabled(context) }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.surfaceContainer,
@@ -287,18 +304,17 @@ fun HomeScreen(
                         )
                     }
                 }
-                if (healthTip != null && !AiSettings.isEnabled(context)) {
+                if (healthTip != null && !showAiCard) {
                     item {
-                        HealthTipCard(tip = healthTip!!, isLoading = isLoading)
+                        HealthTipCard(tip = healthTip!!)
                     }
                 }
-                if (healthTip != null && AiSettings.isEnabled(context)) {
+                if (showAiCard) {
                     item {
                         HealthTipCard(
-                            tip = healthTip!!,
+                            tip = healthTip,
                             aiTip = aiHealthTip,
                             aiLoading = aiLoading,
-                            isLoading = isLoading,
                             onRefreshAi = { refreshAi() }
                         )
                     }
