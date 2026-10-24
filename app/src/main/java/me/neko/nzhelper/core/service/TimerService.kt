@@ -1,23 +1,35 @@
 package me.neko.nzhelper.core.service
 
+import android.animation.ValueAnimator
 import android.app.Notification
 import android.app.PendingIntent
 import android.app.Service
+import android.content.ComponentCallbacks
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.Point
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.hardware.display.DisplayManager
 import android.os.Binder
+import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
+import android.util.DisplayMetrics
+import android.view.Display
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
+import android.view.WindowInsets
 import android.view.WindowManager
+import android.view.animation.DecelerateInterpolator
 import androidx.appcompat.widget.AppCompatTextView
 import androidx.core.app.NotificationCompat
 import androidx.core.graphics.toColorInt
@@ -38,6 +50,7 @@ import me.neko.nzhelper.core.datastore.TimerSettings
 import me.neko.nzhelper.core.notification.NotificationUtil
 import me.neko.nzhelper.core.util.formatTime
 import kotlin.math.abs
+import kotlin.math.roundToInt
 import kotlin.time.Duration.Companion.milliseconds
 
 /**
@@ -64,11 +77,31 @@ class TimerService : Service() {
 
     /** 计时悬浮窗视图，null 表示未显示 */
     private var floatingView: FloatingTimerView? = null
+    private var floatingParams: WindowManager.LayoutParams? = null
+    private var floatingSide: TimerSettings.Side = TimerSettings.Side.RIGHT
+    private var floatingLandscape: Boolean = false
+    private var lastSafeRect: SafeRect? = null
+    private var lastFloatingWidth: Int = 0
+    private var snapAnimator: ValueAnimator? = null
+    private var dragging: Boolean = false
+    private var sessionActive: Boolean = false
+    private var displayListener: DisplayManager.DisplayListener? = null
+    private var configCallbacks: ComponentCallbacks? = null
 
     override fun onBind(intent: Intent): IBinder = binder
 
     inner class LocalBinder : Binder() {
         fun getService(): TimerService = this@TimerService
+    }
+
+    /** 让运行中的 Service 立即响应悬浮窗开关变化，而不是等到下一次开始计时 */
+    fun applyFloatingPreference() {
+        if (!sessionActive) return
+        if (TimerSettings.isFloatingEnabled(this) && Settings.canDrawOverlays(this)) {
+            showFloatingWindow()
+        } else {
+            removeFloatingWindow()
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -84,6 +117,7 @@ class TimerService : Service() {
     private fun startTimer() {
         if (_isRunning.value) return
 
+        sessionActive = true
         _isRunning.value = true
         baseTimeMs = SystemClock.elapsedRealtime()
 
@@ -119,6 +153,7 @@ class TimerService : Service() {
 
     private fun stopTimer() {
         tickJob?.cancel()
+        sessionActive = false
         _isRunning.value = false
         accumulatedSec = 0
         _elapsedSec.value = 0
@@ -131,6 +166,7 @@ class TimerService : Service() {
 
     private fun resetTimer() {
         tickJob?.cancel()
+        sessionActive = false
         _isRunning.value = false
         accumulatedSec = 0
         _elapsedSec.value = 0
@@ -219,7 +255,7 @@ class TimerService : Service() {
         if (!TimerSettings.isFloatingEnabled(this)) return
         if (!Settings.canDrawOverlays(this)) return
         if (floatingView != null) return
-        val wm = getSystemService(WINDOW_SERVICE) as? WindowManager ?: return
+        val wm = windowManager() ?: return
 
         val view = FloatingTimerView(this).apply {
             text = formatTime(_elapsedSec.value)
@@ -242,17 +278,15 @@ class TimerService : Service() {
                 }
             }
         }
+        measureFloating(view)
 
-        view.measure(
-            View.MeasureSpec.makeMeasureSpec(
-                0, View.MeasureSpec.UNSPECIFIED
-            ),
-            View.MeasureSpec.makeMeasureSpec(
-                0, View.MeasureSpec.UNSPECIFIED
+        val rect = safeRect()
+        val landscape = isLandscape()
+        val placement = TimerSettings.getFloatingPlacement(this, landscape)
+            ?: TimerSettings.FloatingPlacement(
+                TimerSettings.Side.RIGHT,
+                rect.top + edgeMargin() + dp(DEFAULT_TOP_INSET_DP)
             )
-        )
-
-        (view.background as? GradientDrawable)?.cornerRadius = view.measuredHeight / 2f
 
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -262,18 +296,73 @@ class TimerService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = resources.displayMetrics.widthPixels - view.measuredWidth - dp(16)
-            y = dp(96)
         }
 
+        floatingParams = params
+        floatingLandscape = landscape
+        placeInto(params, placement, view, rect)
+
         attachFloatingTouch(view, params, wm)
+        attachFloatingLayoutListener(view)
 
         try {
             wm.addView(view, params)
             floatingView = view
+            registerScreenListeners()
+        } catch (e: Exception) {
+            floatingParams = null
+            e.printStackTrace()
+        }
+    }
+
+    private fun measureFloating(view: View) {
+        view.measure(
+            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+        )
+        (view.background as? GradientDrawable)?.cornerRadius = view.measuredHeight / 2f
+        lastFloatingWidth = view.measuredWidth
+    }
+
+    /** 把一份位置档案换算成绝对坐标并写入 params，是所有坐标写入的唯一入口 */
+    private fun placeInto(
+        params: WindowManager.LayoutParams,
+        placement: TimerSettings.FloatingPlacement,
+        view: View,
+        rect: SafeRect
+    ) {
+        val margin = edgeMargin()
+        val targetX = when (placement.side) {
+            TimerSettings.Side.LEFT -> rect.left + margin
+            TimerSettings.Side.RIGHT -> rect.right - margin - view.measuredWidth
+        }
+        val point = clamp(targetX, placement.y, view.measuredWidth, view.measuredHeight, rect)
+        params.x = point.x
+        params.y = point.y
+        floatingSide = placement.side
+        lastSafeRect = rect
+    }
+
+    private fun applyPlacement(placement: TimerSettings.FloatingPlacement) {
+        val view = floatingView ?: return
+        val params = floatingParams ?: return
+        val wm = windowManager() ?: return
+        measureFloating(view)
+        placeInto(params, placement, view, safeRect())
+        try {
+            wm.updateViewLayout(view, params)
         } catch (e: Exception) {
             e.printStackTrace()
         }
+    }
+
+    private fun clamp(x: Int, y: Int, width: Int, height: Int, rect: SafeRect): Point {
+        val margin = edgeMargin()
+        val minX = rect.left + margin
+        val maxX = (rect.right - margin - width).coerceAtLeast(minX)
+        val minY = rect.top + margin
+        val maxY = (rect.bottom - margin - height).coerceAtLeast(minY)
+        return Point(x.coerceIn(minX, maxX), y.coerceIn(minY, maxY))
     }
 
     private fun attachFloatingTouch(
@@ -291,6 +380,9 @@ class TimerService : Service() {
         view.setOnTouchListener { _, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    snapAnimator?.cancel()
+                    snapAnimator = null
+                    dragging = true
                     downRawX = event.rawX
                     downRawY = event.rawY
                     downX = params.x
@@ -304,8 +396,17 @@ class TimerService : Service() {
                     val dy = event.rawY - downRawY
                     if (!moved && (abs(dx) > slop || abs(dy) > slop)) moved = true
                     if (moved) {
-                        params.x = downX + dx.toInt()
-                        params.y = downY + dy.toInt()
+                        val rect = safeRect()
+                        val point = clamp(
+                            (downX + dx).toInt(),
+                            (downY + dy).toInt(),
+                            view.measuredWidth,
+                            view.measuredHeight,
+                            rect
+                        )
+                        params.x = point.x
+                        params.y = point.y
+                        lastSafeRect = rect
                         try {
                             wm.updateViewLayout(view, params)
                         } catch (e: Exception) {
@@ -316,13 +417,101 @@ class TimerService : Service() {
                 }
 
                 MotionEvent.ACTION_UP -> {
-                    if (!moved) {
-                        view.performClick()
-                    }
+                    dragging = false
+                    if (moved) snapToEdge(view, params, wm) else view.performClick()
+                    true
+                }
+
+                MotionEvent.ACTION_CANCEL -> {
+                    dragging = false
+                    // 旋转会中断手势，此时按新方向重新摆放，避免停在旧方向的坐标上
+                    onScreenGeometryChanged()
                     true
                 }
 
                 else -> false
+            }
+        }
+    }
+
+    private fun snapToEdge(
+        view: FloatingTimerView,
+        params: WindowManager.LayoutParams,
+        wm: WindowManager
+    ) {
+        val rect = safeRect()
+        val margin = edgeMargin()
+        val center = params.x + view.measuredWidth / 2
+        val side = if (center < (rect.left + rect.right) / 2) {
+            TimerSettings.Side.LEFT
+        } else {
+            TimerSettings.Side.RIGHT
+        }
+        val targetX = when (side) {
+            TimerSettings.Side.LEFT -> rect.left + margin
+            TimerSettings.Side.RIGHT -> rect.right - margin - view.measuredWidth
+        }
+        val point = clamp(targetX, params.y, view.measuredWidth, view.measuredHeight, rect)
+
+        floatingSide = side
+        TimerSettings.setFloatingPlacement(
+            this,
+            floatingLandscape,
+            TimerSettings.FloatingPlacement(side, point.y)
+        )
+        animateTo(point.x, point.y, view, params, wm)
+    }
+
+    private fun animateTo(
+        targetX: Int,
+        targetY: Int,
+        view: View,
+        params: WindowManager.LayoutParams,
+        wm: WindowManager
+    ) {
+        snapAnimator?.cancel()
+        params.y = targetY
+        if (params.x == targetX) {
+            try {
+                wm.updateViewLayout(view, params)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+            return
+        }
+        snapAnimator = ValueAnimator.ofInt(params.x, targetX).apply {
+            duration = SNAP_DURATION_MS
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { animator ->
+                params.x = animator.animatedValue as Int
+                try {
+                    wm.updateViewLayout(view, params)
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+            start()
+        }
+    }
+
+    private fun attachFloatingLayoutListener(view: View) {
+        view.addOnLayoutChangeListener { v, left, _, right, _, _, _, _, _ ->
+            val width = right - left
+            if (width <= 0 || width == lastFloatingWidth) return@addOnLayoutChangeListener
+            lastFloatingWidth = width
+            if (dragging || snapAnimator?.isRunning == true) return@addOnLayoutChangeListener
+            val params = floatingParams ?: return@addOnLayoutChangeListener
+            val wm = windowManager() ?: return@addOnLayoutChangeListener
+            placeInto(
+                params,
+                TimerSettings.FloatingPlacement(floatingSide, params.y),
+                v,
+                safeRect()
+            )
+            try {
+                wm.updateViewLayout(v, params)
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
         }
     }
@@ -336,13 +525,154 @@ class TimerService : Service() {
     }
 
     private fun removeFloatingWindow() {
-        val view = floatingView ?: return
+        snapAnimator?.cancel()
+        snapAnimator = null
+        dragging = false
+        unregisterScreenListeners()
+        val view = floatingView
         floatingView = null
+        floatingParams = null
+        lastFloatingWidth = 0
+        lastSafeRect = null
+        if (view == null) return
         try {
-            (getSystemService(WINDOW_SERVICE) as? WindowManager)?.removeView(view)
+            windowManager()?.removeView(view)
         } catch (e: Exception) {
             e.printStackTrace()
         }
+    }
+
+    private fun isLandscape(): Boolean =
+        resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+
+    private fun edgeMargin(): Int = dp(EDGE_MARGIN_DP)
+
+    private fun windowManager(): WindowManager? =
+        getSystemService(WINDOW_SERVICE) as? WindowManager
+
+    private fun safeRect(): SafeRect {
+        val wm = windowManager() ?: return SafeRect(
+            0,
+            0,
+            resources.displayMetrics.widthPixels,
+            resources.displayMetrics.heightPixels
+        )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val metrics = wm.currentWindowMetrics
+            val bounds = metrics.bounds
+            val insets = metrics.windowInsets.getInsetsIgnoringVisibility(
+                WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout()
+            )
+            return SafeRect(
+                bounds.left + insets.left,
+                bounds.top + insets.top,
+                bounds.right - insets.right,
+                bounds.bottom - insets.bottom
+            )
+        }
+        return legacySafeRect(wm)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun legacySafeRect(wm: WindowManager): SafeRect {
+        val metrics = DisplayMetrics()
+        wm.defaultDisplay.getRealMetrics(metrics)
+        val navRight = if (isLandscape()) systemDimension("navigation_bar_width") else 0
+        val navBottom = if (isLandscape()) 0 else systemDimension("navigation_bar_height")
+        return SafeRect(
+            0,
+            systemDimension("status_bar_height"),
+            metrics.widthPixels - navRight,
+            metrics.heightPixels - navBottom
+        )
+    }
+
+    /** 系统尺寸资源不可读时返回 0：宁可少避让，也不能算出越界坐标 */
+    private fun systemDimension(name: String): Int {
+        val id = resources.getIdentifier(name, "dimen", "android")
+        if (id == 0) return 0
+        return resources.getDimensionPixelSize(id)
+    }
+
+    private fun registerScreenListeners() {
+        if (displayListener != null) return
+        val displayManager = getSystemService(DISPLAY_SERVICE) as? DisplayManager
+        val listener = object : DisplayManager.DisplayListener {
+            override fun onDisplayAdded(displayId: Int) = Unit
+            override fun onDisplayRemoved(displayId: Int) = Unit
+            override fun onDisplayChanged(displayId: Int) {
+                if (displayId == Display.DEFAULT_DISPLAY) onScreenGeometryChanged()
+            }
+        }
+        displayManager?.registerDisplayListener(listener, Handler(Looper.getMainLooper()))
+        displayListener = listener
+
+        val callbacks = object : ComponentCallbacks {
+            override fun onConfigurationChanged(newConfig: Configuration) {
+                onScreenGeometryChanged()
+            }
+
+            @Suppress("OVERRIDE_DEPRECATION")
+            override fun onLowMemory() = Unit
+        }
+        applicationContext.registerComponentCallbacks(callbacks)
+        configCallbacks = callbacks
+    }
+
+    private fun unregisterScreenListeners() {
+        displayListener?.let { listener ->
+            (getSystemService(DISPLAY_SERVICE) as? DisplayManager)?.unregisterDisplayListener(listener)
+        }
+        displayListener = null
+        configCallbacks?.let { applicationContext.unregisterComponentCallbacks(it) }
+        configCallbacks = null
+    }
+
+    private fun onScreenGeometryChanged() {
+        val view = floatingView ?: return
+        if (dragging) return
+
+        val oldRect = lastSafeRect
+        val currentY = floatingParams?.y ?: return
+        measureFloating(view)
+
+        val landscape = isLandscape()
+        if (landscape == floatingLandscape) {
+            val stored = TimerSettings.getFloatingPlacement(this, landscape)
+            if (stored != null) {
+                applyPlacement(stored)
+            } else {
+                applyPlacement(TimerSettings.FloatingPlacement(floatingSide, currentY))
+            }
+            return
+        }
+
+        val stored = TimerSettings.getFloatingPlacement(this, landscape)
+        floatingLandscape = landscape
+        if (stored != null) {
+            applyPlacement(stored)
+        } else {
+            val inherited = inheritPlacement(currentY, oldRect, view)
+            TimerSettings.setFloatingPlacement(this, landscape, inherited)
+            applyPlacement(inherited)
+        }
+    }
+
+    /** 目标方向还没有档案时，按垂直比例把当前位置搬过去 */
+    private fun inheritPlacement(
+        currentY: Int,
+        oldRect: SafeRect?,
+        view: View
+    ): TimerSettings.FloatingPlacement {
+        val margin = edgeMargin()
+        val newRect = safeRect()
+        val oldHeight = oldRect?.height ?: newRect.height
+        val oldTop = oldRect?.top ?: newRect.top
+        val oldSpan = (oldHeight - margin * 2 - view.measuredHeight).coerceAtLeast(1)
+        val relative = ((currentY - oldTop - margin).toFloat() / oldSpan).coerceIn(0f, 1f)
+        val newSpan = (newRect.height - margin * 2 - view.measuredHeight).coerceAtLeast(1)
+        val y = newRect.top + margin + (relative * newSpan).roundToInt()
+        return TimerSettings.FloatingPlacement(floatingSide, y)
     }
 
     override fun onDestroy() {
@@ -352,12 +682,19 @@ class TimerService : Service() {
         super.onDestroy()
     }
 
+    private data class SafeRect(val left: Int, val top: Int, val right: Int, val bottom: Int) {
+        val height: Int get() = bottom - top
+    }
+
     companion object {
         const val ACTION_START = "me.neko.nzhelper.ACTION_START"
         const val ACTION_PAUSE = "me.neko.nzhelper.ACTION_PAUSE"
         const val ACTION_STOP = "me.neko.nzhelper.ACTION_STOP"
         const val ACTION_RESET = "me.neko.nzhelper.ACTION_RESET"
         const val NOTIF_ID = 1001
+        private const val EDGE_MARGIN_DP = 8
+        private const val DEFAULT_TOP_INSET_DP = 96
+        private const val SNAP_DURATION_MS = 120L
     }
 }
 

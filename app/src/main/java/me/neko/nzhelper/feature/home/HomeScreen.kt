@@ -154,6 +154,7 @@ fun HomeScreen(
         } else {
             floatingTimerEnabled = enabled
             TimerSettings.setFloatingEnabled(context, enabled)
+            timerService?.applyFloatingPreference()
         }
     }
     val sessions = remember { mutableStateListOf<Session>() }
@@ -171,6 +172,7 @@ fun HomeScreen(
                     pendingFloatingGrant = false
                     floatingTimerEnabled = true
                     TimerSettings.setFloatingEnabled(context, true)
+                    timerService?.applyFloatingPreference()
                 }
             }
         }
